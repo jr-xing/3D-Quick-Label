@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(dir \"C:\\Users\\jx332\\Documents\\Projects\\2025-03-CardioSegDev\")",
+      "Bash(dir:*)",
+      "Bash(file:*)",
+      "Bash(git config:*)",
+      "Bash(C:Usersjx332AppDataLocalminiconda3envsmedsegtoolpython.exe -c \"import pkg_resources; packages = sorted\\([f''{p.key}=={p.version}'' for p in pkg_resources.working_set]\\); print\\(''\\\\n''.join\\(packages\\)\\)\")",
+      "Bash(C:Usersjx332AppDataLocalminiconda3envsmedsegtoolpython.exe -c \"import nibabel as nib; import numpy as np; img = nib.load\\(r''c:\\\\Users\\\\jx332\\\\Documents\\\\Projects\\\\2026-01-15-3D-Quick-Label\\\\data\\\\mr_train_1001_image.nii.gz''\\); print\\(''Shape:'', img.shape\\); print\\(''Dtype:'', img.get_fdata\\(\\).dtype\\); print\\(''Affine:\\\\n'', img.affine\\); print\\(''Header:\\\\n'', img.header\\)\")",
+      "Bash(cmd /c:*)",
+      "Bash(powershell:*)"
+    ]
+  }
+}

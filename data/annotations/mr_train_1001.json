@@ -1,0 +1,61 @@
+{
+  "patient_id": "mr_train_1001",
+  "image_path": "C:\\Users\\jx332\\Documents\\Projects\\2026-01-15-3D-Quick-Label\\data\\mr_train_1001_image.nii.gz",
+  "mask_path": "C:\\Users\\jx332\\Documents\\Projects\\2026-01-15-3D-Quick-Label\\data\\mr_train_1001_label.nii.gz",
+  "keypoints": [
+    {
+      "x": 358.29772007303467,
+      "y": 81.72651923116048,
+      "z": 79.0,
+      "label": "Label 1",
+      "color": [
+        255,
+        0,
+        0
+      ]
+    },
+    {
+      "x": 404.84394956892737,
+      "y": 219.20026681205292,
+      "z": 79.0,
+      "label": "Label 1",
+      "color": [
+        255,
+        0,
+        0
+      ]
+    },
+    {
+      "x": 377.2409530074096,
+      "y": 289.56084628258844,
+      "z": 79.0,
+      "label": "Label 1",
+      "color": [
+        255,
+        0,
+        0
+      ]
+    },
+    {
+      "x": 162.3705680089281,
+      "y": 226.23632475910648,
+      "z": 79.0,
+      "label": "Label 1",
+      "color": [
+        255,
+        0,
+        0
+      ]
+    }
+  ],
+  "masks": {
+    "1": {
+      "label_name": "Label 1",
+      "color": [
+        255,
+        0,
+        0
+      ]
+    }
+  }
+}
