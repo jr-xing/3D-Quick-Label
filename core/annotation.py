@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 import numpy as np
 
+import config
+
 
 @dataclass
 class Keypoint:
@@ -198,15 +200,19 @@ class Annotations:
             volume_shape: Shape of the volume (z, y, x)
             color: RGB color for visualization
             reference_mask: Optional reference mask array with label values.
-                           Only voxels matching label_id will be extracted.
+                           Voxels matching the mapped reference value will be extracted.
 
         Returns:
             MaskAnnotation instance
         """
         if label_id not in self.masks:
             if reference_mask is not None:
+                # Map UI label_id to reference mask value
+                ref_value = config.LABEL_TO_REFERENCE_VALUE.get(label_id, label_id)
+                print(f"  [get_or_create_mask] label_id={label_id} -> ref_value={ref_value}")
                 # Extract only the specific label from reference mask
-                mask_data = (reference_mask == label_id).astype(np.uint8) * 255
+                mask_data = (reference_mask == ref_value).astype(np.uint8) * 255
+                print(f"  [get_or_create_mask] extracted {np.sum(mask_data > 0)} voxels")
             else:
                 mask_data = np.zeros(volume_shape, dtype=np.uint8)
             self.masks[label_id] = MaskAnnotation(

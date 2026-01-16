@@ -71,6 +71,7 @@ class SliceView(QWidget):
         # Segment preview
         self._segment_preview_path: Optional[QPainterPath] = None
         self._segment_preview_is_erasing = False
+        self._segment_preview_color: Tuple[int, int, int] = (0, 255, 0)  # Default green
 
         self._setup_ui()
 
@@ -294,7 +295,7 @@ class SliceView(QWidget):
 
         self.image_item.setPixmap(QPixmap.fromImage(qimage.copy()))
 
-    def _update_mask_overlay(self):
+    def _update_mask_overlay(self, debug=False):
         """Update the mask overlay (reference mask + user annotations)."""
         if self._volume is None:
             self.mask_overlay_item.setPixmap(QPixmap())
@@ -306,11 +307,31 @@ class SliceView(QWidget):
         # Create RGBA overlay
         overlay = np.zeros((h, w, 4), dtype=np.uint8)
 
+        # Get set of reference mask values that have user annotations (these override reference mask)
+        # We need to convert UI label IDs to reference mask values
+        user_edited_ref_values = set()
+        if self._annotations is not None:
+            for label_id in self._annotations.masks.keys():
+                ref_value = config.LABEL_TO_REFERENCE_VALUE.get(label_id, label_id)
+                user_edited_ref_values.add(ref_value)
+
+        # DEBUG
+        if debug or (self._annotations is not None and len(self._annotations.masks) > 0):
+            print(f"\n=== DEBUG _update_mask_overlay ({self.plane}, slice={self.current_slice}) ===")
+            print(f"user_edited_label_ids={set(self._annotations.masks.keys()) if self._annotations else set()}")
+            print(f"user_edited_ref_values={user_edited_ref_values}")
+
         # Draw reference mask if available and enabled
+        # Skip labels that have user annotations (user edits take precedence)
         if self.show_reference_mask and self._reference_mask is not None:
             ref_slice = self._reference_mask.get_slice(self.plane, self.current_slice)
-            for value, color in config.REFERENCE_MASK_COLORS.items():
-                mask = ref_slice == value
+            for ref_value, color in config.REFERENCE_MASK_COLORS.items():
+                # Skip this label if user has edited it
+                if ref_value in user_edited_ref_values:
+                    if debug or len(user_edited_ref_values) > 0:
+                        print(f"  SKIPPING reference value {ref_value} (user has edited)")
+                    continue
+                mask = ref_slice == ref_value
                 if np.any(mask):
                     overlay[mask, 0] = color[0]
                     overlay[mask, 1] = color[1]
@@ -322,11 +343,16 @@ class SliceView(QWidget):
             for label_id, mask_ann in self._annotations.masks.items():
                 mask_slice = mask_ann.get_2d_slice(self.plane, self.current_slice)
                 mask_bool = mask_slice > 0
+                num_pixels = np.sum(mask_bool)
+                print(f"  Drawing user annotation label_id={label_id}: {num_pixels} pixels on this slice")
                 if np.any(mask_bool):
                     overlay[mask_bool, 0] = mask_ann.color[0]
                     overlay[mask_bool, 1] = mask_ann.color[1]
                     overlay[mask_bool, 2] = mask_ann.color[2]
                     overlay[mask_bool, 3] = self.mask_opacity
+
+        if self._annotations is not None and len(self._annotations.masks) > 0:
+            print(f"=== END DEBUG ===\n")
 
         # Convert to QImage
         overlay = np.ascontiguousarray(overlay)
@@ -382,7 +408,14 @@ class SliceView(QWidget):
 
         # Draw segment preview
         if self._segment_preview_path is not None:
-            color = QColor(255, 0, 0, 200) if self._segment_preview_is_erasing else QColor(0, 255, 0, 200)
+            # Use label color for preview, but tint red if erasing
+            if self._segment_preview_is_erasing:
+                # Red tint for erasing
+                color = QColor(255, 0, 0, 200)
+            else:
+                # Use the actual label color
+                r, g, b = self._segment_preview_color
+                color = QColor(r, g, b, 200)
             pen = QPen(color, 2, Qt.SolidLine)
             painter.setPen(pen)
             painter.drawPath(self._segment_preview_path)
@@ -410,10 +443,18 @@ class SliceView(QWidget):
         self._brush_preview_points = []
         self._update_annotation_overlay()
 
-    def set_segment_preview(self, path: QPainterPath, is_erasing: bool = False):
-        """Set segment contour preview for display."""
+    def set_segment_preview(self, path: QPainterPath, is_erasing: bool = False, color: Tuple[int, int, int] = None):
+        """Set segment contour preview for display.
+
+        Args:
+            path: The QPainterPath defining the contour
+            is_erasing: If True, shows erase preview (red tint)
+            color: RGB tuple for the label color. If None, uses default green.
+        """
         self._segment_preview_path = path
         self._segment_preview_is_erasing = is_erasing
+        if color is not None:
+            self._segment_preview_color = color
         self._update_annotation_overlay()
 
     def clear_segment_preview(self):

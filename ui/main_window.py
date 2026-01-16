@@ -374,21 +374,48 @@ class MainWindow(QMainWindow):
         label_id, label_name, color = self.controls.get_current_label()
         erase = self._temp_erase_mode or self.toolbar.is_erase_mode()
 
+        # DEBUG logging
+        print(f"\n=== DEBUG _end_brush_stroke ===")
+        print(f"label_id={label_id}, label_name={label_name}, erase={erase}")
+        print(f"plane={self._brush_stroke_plane}, slice={self._brush_stroke_slice}")
+        print(f"num_points={len(self._brush_stroke_points)}")
+
         # Get or create mask (initialize from reference mask if available)
         volume_shape = self._current_patient.image.shape
         initial_mask = None
-        if self._current_patient.reference_mask is not None:
+        has_reference = self._current_patient.reference_mask is not None
+        print(f"has_reference_mask={has_reference}")
+
+        if has_reference:
             initial_mask = self._current_patient.reference_mask.array
+            # Check if this label exists in reference mask (using mapped value)
+            import config as cfg
+            ref_value = cfg.LABEL_TO_REFERENCE_VALUE.get(label_id, label_id)
+            ref_label_count = np.sum(initial_mask == ref_value)
+            print(f"label_id={label_id} maps to ref_value={ref_value}")
+            print(f"reference_mask voxels with ref_value={ref_value}: {ref_label_count}")
+
+        # Check if mask already exists for this label
+        mask_existed = label_id in self._current_patient.annotations.masks
+        print(f"mask_already_existed={mask_existed}")
+
         mask_ann = self._current_patient.annotations.get_or_create_mask(
             label_id, label_name, volume_shape, color, initial_mask
         )
 
+        # Check mask stats after get_or_create
+        total_mask_voxels = np.sum(mask_ann.mask > 0)
+        print(f"after get_or_create: total_mask_voxels={total_mask_voxels}")
+
         # Get 2D slice
         slice_2d = mask_ann.get_2d_slice(self._brush_stroke_plane, self._brush_stroke_slice).copy()
+        slice_nonzero_before = np.sum(slice_2d > 0)
+        print(f"slice_2d nonzero pixels BEFORE draw: {slice_nonzero_before}")
 
         # Draw stroke on slice
         brush_size = self.controls.get_brush_size()
         value = 0 if erase else 255
+        print(f"brush_size={brush_size}, draw_value={value}")
 
         for i in range(len(self._brush_stroke_points) - 1):
             pt1 = self._brush_stroke_points[i]
@@ -400,9 +427,18 @@ class MainWindow(QMainWindow):
             pt = self._brush_stroke_points[0]
             cv2.circle(slice_2d, pt, brush_size // 2, value, -1)
 
+        slice_nonzero_after = np.sum(slice_2d > 0)
+        print(f"slice_2d nonzero pixels AFTER draw: {slice_nonzero_after}")
+
         # Update mask
         mask_ann.set_2d_slice(self._brush_stroke_plane, self._brush_stroke_slice, slice_2d)
         self._current_patient.annotations.modified = True
+
+        # Verify update
+        slice_verify = mask_ann.get_2d_slice(self._brush_stroke_plane, self._brush_stroke_slice)
+        print(f"slice_2d nonzero pixels AFTER set: {np.sum(slice_verify > 0)}")
+        print(f"annotations.masks keys: {list(self._current_patient.annotations.masks.keys())}")
+        print(f"=== END DEBUG ===\n")
 
         # Clear preview and update display
         self._is_drawing = False
@@ -424,8 +460,11 @@ class MainWindow(QMainWindow):
         self._segment_plane = plane
         self._segment_slice = slice_idx
 
+        # Get current label color for preview
+        _, _, color = self.controls.get_current_label()
+
         view = self._get_view_for_plane(plane)
-        view.set_segment_preview(self._segment_path, self._segment_is_erasing)
+        view.set_segment_preview(self._segment_path, self._segment_is_erasing, color)
 
     def _continue_segment(self, plane: str, slice_idx: int, scene_pos: QPointF):
         """Continue the current segment contour."""
@@ -434,8 +473,11 @@ class MainWindow(QMainWindow):
 
         self._segment_path.lineTo(scene_pos)
 
+        # Get current label color for preview
+        _, _, color = self.controls.get_current_label()
+
         view = self._get_view_for_plane(plane)
-        view.set_segment_preview(self._segment_path, self._segment_is_erasing)
+        view.set_segment_preview(self._segment_path, self._segment_is_erasing, color)
 
     def _end_segment(self, plane: str, slice_idx: int):
         """End the segment contour and apply to mask."""

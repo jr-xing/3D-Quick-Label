@@ -31,6 +31,7 @@ LABEL_NAMES: Dict[int, str] = {
 }
 
 # Reference mask color mapping (for loaded NIfTI labels)
+# Maps reference mask values to RGB colors
 REFERENCE_MASK_COLORS: Dict[int, Tuple[int, int, int]] = {
     205: (255, 0, 0),     # Red
     420: (0, 255, 0),     # Green
@@ -39,6 +40,18 @@ REFERENCE_MASK_COLORS: Dict[int, Tuple[int, int, int]] = {
     600: (255, 0, 255),   # Magenta
     820: (0, 255, 255),   # Cyan
     850: (255, 128, 0),   # Orange
+}
+
+# Mapping from UI label ID to reference mask value
+# This allows editing loaded segmentations
+LABEL_TO_REFERENCE_VALUE: Dict[int, int] = {
+    1: 205,   # Label 1 (Red) -> reference value 205
+    2: 420,   # Label 2 (Green) -> reference value 420
+    3: 500,   # Label 3 (Blue) -> reference value 500
+    4: 550,   # Label 4 (Yellow) -> reference value 550
+    5: 600,   # Label 5 (Magenta) -> reference value 600
+    6: 820,   # Label 6 (Cyan) -> reference value 820
+    7: 850,   # Label 7 (Orange) -> reference value 850
 }
 
 # Keypoint settings

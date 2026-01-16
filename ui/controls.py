@@ -104,7 +104,13 @@ class ControlsWidget(QWidget):
         self.label_combo = QComboBox()
         for label_id, label_name in config.LABEL_NAMES.items():
             color = config.LABEL_COLORS.get(label_id, (128, 128, 128))
-            self.label_combo.addItem(f"{label_name}", label_id)
+            # Show reference mask value in dropdown if mapping exists
+            ref_value = config.LABEL_TO_REFERENCE_VALUE.get(label_id, None)
+            if ref_value is not None:
+                display_text = f"{label_name} ({ref_value})"
+            else:
+                display_text = label_name
+            self.label_combo.addItem(display_text, label_id)
         self.label_combo.currentIndexChanged.connect(self._on_label_changed)
 
         self.brush_size_slider = QSlider(Qt.Horizontal)
