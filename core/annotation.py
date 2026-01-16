@@ -187,7 +187,8 @@ class Annotations:
 
     def get_or_create_mask(
         self, label_id: int, label_name: str, volume_shape: Tuple[int, int, int],
-        color: Tuple[int, int, int] = (0, 255, 0)
+        color: Tuple[int, int, int] = (0, 255, 0),
+        reference_mask: Optional[np.ndarray] = None
     ) -> MaskAnnotation:
         """Get existing mask or create new one.
 
@@ -196,15 +197,22 @@ class Annotations:
             label_name: Human-readable label name
             volume_shape: Shape of the volume (z, y, x)
             color: RGB color for visualization
+            reference_mask: Optional reference mask array with label values.
+                           Only voxels matching label_id will be extracted.
 
         Returns:
             MaskAnnotation instance
         """
         if label_id not in self.masks:
+            if reference_mask is not None:
+                # Extract only the specific label from reference mask
+                mask_data = (reference_mask == label_id).astype(np.uint8) * 255
+            else:
+                mask_data = np.zeros(volume_shape, dtype=np.uint8)
             self.masks[label_id] = MaskAnnotation(
                 label_id=label_id,
                 label_name=label_name,
-                mask=np.zeros(volume_shape, dtype=np.uint8),
+                mask=mask_data,
                 color=color,
             )
             self.modified = True

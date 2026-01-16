@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QSplitter, QStatusBar, QMessageBox, QApplication
 )
 from PySide6.QtCore import Qt, Signal, QPointF
-from PySide6.QtGui import QKeySequence, QShortcut, QCursor
+from PySide6.QtGui import QKeySequence, QShortcut, QCursor, QPainterPath
 
 import config
 from core.patient import Patient
@@ -41,7 +41,16 @@ class MainWindow(QMainWindow):
 
         # Brush stroke accumulator
         self._brush_stroke_points: List[Tuple[int, int]] = []
+        self._brush_stroke_plane: Optional[str] = None
+        self._brush_stroke_slice: Optional[int] = None
         self._is_drawing = False
+        self._temp_erase_mode = False
+
+        # Segment tool state
+        self._segment_path: Optional[QPainterPath] = None
+        self._segment_plane: Optional[str] = None
+        self._segment_slice: Optional[int] = None
+        self._segment_is_erasing = False
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -101,6 +110,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("1"), self, lambda: self.toolbar.set_tool("view"))
         QShortcut(QKeySequence("2"), self, lambda: self.toolbar.set_tool("keypoint"))
         QShortcut(QKeySequence("3"), self, lambda: self.toolbar.set_tool("brush"))
+        QShortcut(QKeySequence("4"), self, lambda: self.toolbar.set_tool("segment"))
 
         # Save
         QShortcut(QKeySequence("Ctrl+S"), self, self._save_current)
@@ -149,6 +159,8 @@ class MainWindow(QMainWindow):
         elif tool_name == "keypoint":
             cursor = Qt.CrossCursor
         elif tool_name == "brush":
+            cursor = Qt.CrossCursor
+        elif tool_name == "segment":
             cursor = Qt.CrossCursor
         else:
             cursor = Qt.ArrowCursor
@@ -252,10 +264,20 @@ class MainWindow(QMainWindow):
             if self._current_tool == "keypoint":
                 self._add_keypoint(plane, slice_idx, scene_pos)
             elif self._current_tool == "brush":
+                self._temp_erase_mode = False
                 self._start_brush_stroke(plane, slice_idx, scene_pos)
+            elif self._current_tool == "segment":
+                self._segment_is_erasing = False
+                self._start_segment(plane, slice_idx, scene_pos)
         elif event.button() == Qt.RightButton:
             if self._current_tool == "keypoint":
                 self._remove_keypoint(plane, slice_idx, scene_pos)
+            elif self._current_tool == "brush":
+                self._temp_erase_mode = True
+                self._start_brush_stroke(plane, slice_idx, scene_pos)
+            elif self._current_tool == "segment":
+                self._segment_is_erasing = True
+                self._start_segment(plane, slice_idx, scene_pos)
 
     def _on_view_mouse_moved(self, plane: str, slice_idx: int, scene_pos: QPointF, event):
         """Handle mouse move on a view."""
@@ -264,15 +286,20 @@ class MainWindow(QMainWindow):
 
         if self._is_drawing and self._current_tool == "brush":
             self._continue_brush_stroke(plane, slice_idx, scene_pos)
+        elif self._is_drawing and self._current_tool == "segment":
+            self._continue_segment(plane, slice_idx, scene_pos)
 
     def _on_view_mouse_released(self, plane: str, slice_idx: int, scene_pos: QPointF, event):
         """Handle mouse release on a view."""
         if self._current_patient is None:
             return
 
-        if event.button() == Qt.LeftButton:
+        if event.button() in (Qt.LeftButton, Qt.RightButton):
             if self._is_drawing and self._current_tool == "brush":
                 self._end_brush_stroke(plane, slice_idx)
+                self._temp_erase_mode = False
+            elif self._is_drawing and self._current_tool == "segment":
+                self._end_segment(plane, slice_idx)
 
     def _add_keypoint(self, plane: str, slice_idx: int, scene_pos: QPointF):
         """Add a keypoint at the clicked position."""
@@ -345,12 +372,15 @@ class MainWindow(QMainWindow):
 
         # Get current label info
         label_id, label_name, color = self.controls.get_current_label()
-        erase = self.toolbar.is_erase_mode()
+        erase = self._temp_erase_mode or self.toolbar.is_erase_mode()
 
-        # Get or create mask
+        # Get or create mask (initialize from reference mask if available)
         volume_shape = self._current_patient.image.shape
+        initial_mask = None
+        if self._current_patient.reference_mask is not None:
+            initial_mask = self._current_patient.reference_mask.array
         mask_ann = self._current_patient.annotations.get_or_create_mask(
-            label_id, label_name, volume_shape, color
+            label_id, label_name, volume_shape, color, initial_mask
         )
 
         # Get 2D slice
@@ -385,6 +415,89 @@ class MainWindow(QMainWindow):
 
         action = "Erased" if erase else "Painted"
         self.status_bar.showMessage(f"{action} mask for {label_name}")
+
+    def _start_segment(self, plane: str, slice_idx: int, scene_pos: QPointF):
+        """Start a new segment contour."""
+        self._is_drawing = True
+        self._segment_path = QPainterPath()
+        self._segment_path.moveTo(scene_pos)
+        self._segment_plane = plane
+        self._segment_slice = slice_idx
+
+        view = self._get_view_for_plane(plane)
+        view.set_segment_preview(self._segment_path, self._segment_is_erasing)
+
+    def _continue_segment(self, plane: str, slice_idx: int, scene_pos: QPointF):
+        """Continue the current segment contour."""
+        if plane != self._segment_plane:
+            return
+
+        self._segment_path.lineTo(scene_pos)
+
+        view = self._get_view_for_plane(plane)
+        view.set_segment_preview(self._segment_path, self._segment_is_erasing)
+
+    def _end_segment(self, plane: str, slice_idx: int):
+        """End the segment contour and apply to mask."""
+        # Always reset drawing state first
+        self._is_drawing = False
+
+        if self._segment_path is None:
+            return
+
+        try:
+            from tools.segment_tool import SegmentTool
+
+            # Close the path
+            self._segment_path.closeSubpath()
+
+            # Get current label info
+            label_id, label_name, color = self.controls.get_current_label()
+
+            # Get or create mask (initialize from reference mask if available)
+            volume_shape = self._current_patient.image.shape
+            initial_mask = None
+            if self._current_patient.reference_mask is not None:
+                initial_mask = self._current_patient.reference_mask.array
+            mask_ann = self._current_patient.annotations.get_or_create_mask(
+                label_id, label_name, volume_shape, color, initial_mask
+            )
+
+            # Get slice shape
+            slice_shape = self._current_patient.image.get_slice_shape(self._segment_plane)
+
+            # Apply segment to mask
+            SegmentTool.apply_segment_to_mask(
+                mask_ann.mask,
+                self._segment_plane,
+                self._segment_slice,
+                self._segment_path,
+                slice_shape,
+                self._segment_is_erasing
+            )
+            self._current_patient.annotations.modified = True
+
+            action = "Erased" if self._segment_is_erasing else "Filled"
+            self.status_bar.showMessage(f"{action} segment for {label_name}")
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.status_bar.showMessage(f"Segment error: {e}")
+
+        finally:
+            # Always clear preview and reset state
+            if self._segment_plane:
+                view = self._get_view_for_plane(self._segment_plane)
+                view.clear_segment_preview()
+            self._update_all_views()
+            self.patient_list.refresh_display()
+
+            # Reset state
+            self._segment_path = None
+            self._segment_plane = None
+            self._segment_slice = None
+            self._segment_is_erasing = False
 
     def _get_view_for_plane(self, plane: str) -> SliceView:
         """Get the view widget for a given plane."""

@@ -5,8 +5,9 @@ in the main_window.py for simplicity. This module provides base classes
 and constants that could be used for a more modular tool system.
 """
 
-from .base_tool import BaseTool
-from .keypoint_tool import KeypointTool
-from .brush_tool import BrushTool
+from .segment_tool import SegmentTool
 
-__all__ = ["BaseTool", "KeypointTool", "BrushTool"]
+# Note: BaseTool, KeypointTool, BrushTool have metaclass conflicts and are not used
+# The tool logic is handled directly in main_window.py for simplicity
+
+__all__ = ["SegmentTool"]

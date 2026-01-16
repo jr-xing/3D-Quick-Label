@@ -70,9 +70,15 @@ class ToolBar(QToolBar):
         self.brush_button.setToolTip("Brush mode - Paint masks (3)")
         self.tool_button_group.addButton(self.brush_button)
 
+        self.segment_button = QPushButton("Segment")
+        self.segment_button.setCheckable(True)
+        self.segment_button.setToolTip("Segment mode - Draw contour to fill (4)")
+        self.tool_button_group.addButton(self.segment_button)
+
         self.addWidget(self.view_button)
         self.addWidget(self.keypoint_button)
         self.addWidget(self.brush_button)
+        self.addWidget(self.segment_button)
 
         # Connect button group
         self.tool_button_group.buttonClicked.connect(self._on_tool_button_clicked)
@@ -104,6 +110,8 @@ class ToolBar(QToolBar):
             self._set_tool("keypoint")
         elif button == self.brush_button:
             self._set_tool("brush")
+        elif button == self.segment_button:
+            self._set_tool("segment")
 
     def _set_tool(self, tool_name: str):
         """Set the current tool."""
@@ -111,7 +119,7 @@ class ToolBar(QToolBar):
         self.tool_indicator.setText(f"Mode: {tool_name.capitalize()}")
 
         # Show/hide erase button based on tool
-        self.erase_button.setVisible(tool_name == "brush")
+        self.erase_button.setVisible(tool_name in ("brush", "segment"))
 
         self.tool_changed.emit(tool_name)
 
@@ -123,6 +131,8 @@ class ToolBar(QToolBar):
             self.keypoint_button.setChecked(True)
         elif tool_name == "brush":
             self.brush_button.setChecked(True)
+        elif tool_name == "segment":
+            self.segment_button.setChecked(True)
         self._set_tool(tool_name)
 
     def get_current_tool(self) -> str:

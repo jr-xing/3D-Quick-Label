@@ -64,6 +64,14 @@ class SliceView(QWidget):
         self._brush_preview_points: List[Tuple[int, int]] = []
         self._brush_preview_size = config.DEFAULT_BRUSH_SIZE
 
+        # Panning state
+        self._is_panning = False
+        self._pan_start = None
+
+        # Segment preview
+        self._segment_preview_path: Optional[QPainterPath] = None
+        self._segment_preview_is_erasing = False
+
         self._setup_ui()
 
     def _setup_ui(self):
@@ -141,6 +149,13 @@ class SliceView(QWidget):
 
     def _handle_mouse_press(self, event: QMouseEvent):
         """Handle mouse press event."""
+        # Check for Ctrl+click panning
+        if event.button() == Qt.LeftButton and event.modifiers() == Qt.ControlModifier:
+            self._is_panning = True
+            self._pan_start = event.pos()
+            self.view.setCursor(Qt.ClosedHandCursor)
+            return
+
         scene_pos = self.view.mapToScene(event.pos())
         # Check if click is within image bounds
         if self._is_in_image_bounds(scene_pos):
@@ -148,11 +163,27 @@ class SliceView(QWidget):
 
     def _handle_mouse_move(self, event: QMouseEvent):
         """Handle mouse move event."""
+        if self._is_panning:
+            delta = event.pos() - self._pan_start
+            self._pan_start = event.pos()
+            self.view.horizontalScrollBar().setValue(
+                self.view.horizontalScrollBar().value() - delta.x()
+            )
+            self.view.verticalScrollBar().setValue(
+                self.view.verticalScrollBar().value() - delta.y()
+            )
+            return
+
         scene_pos = self.view.mapToScene(event.pos())
         self.mouse_moved.emit(self.plane, self.current_slice, scene_pos, event)
 
     def _handle_mouse_release(self, event: QMouseEvent):
         """Handle mouse release event."""
+        if self._is_panning and event.button() == Qt.LeftButton:
+            self._is_panning = False
+            self.view.setCursor(Qt.ArrowCursor)
+            return
+
         scene_pos = self.view.mapToScene(event.pos())
         self.mouse_released.emit(self.plane, self.current_slice, scene_pos, event)
 
@@ -349,6 +380,22 @@ class SliceView(QWidget):
                 pt = self._brush_preview_points[0]
                 painter.drawPoint(QPointF(*pt))
 
+        # Draw segment preview
+        if self._segment_preview_path is not None:
+            color = QColor(255, 0, 0, 200) if self._segment_preview_is_erasing else QColor(0, 255, 0, 200)
+            pen = QPen(color, 2, Qt.SolidLine)
+            painter.setPen(pen)
+            painter.drawPath(self._segment_preview_path)
+
+            # Semi-transparent fill preview
+            fill_color = QColor(color)
+            fill_color.setAlpha(50)
+            painter.setBrush(QBrush(fill_color))
+            painter.setPen(Qt.NoPen)
+            closed_path = QPainterPath(self._segment_preview_path)
+            closed_path.closeSubpath()
+            painter.drawPath(closed_path)
+
         painter.end()
         self.annotation_overlay_item.setPixmap(pixmap)
 
@@ -361,6 +408,17 @@ class SliceView(QWidget):
     def clear_brush_preview(self):
         """Clear brush stroke preview."""
         self._brush_preview_points = []
+        self._update_annotation_overlay()
+
+    def set_segment_preview(self, path: QPainterPath, is_erasing: bool = False):
+        """Set segment contour preview for display."""
+        self._segment_preview_path = path
+        self._segment_preview_is_erasing = is_erasing
+        self._update_annotation_overlay()
+
+    def clear_segment_preview(self):
+        """Clear segment contour preview."""
+        self._segment_preview_path = None
         self._update_annotation_overlay()
 
     def fit_view(self):
