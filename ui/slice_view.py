@@ -73,6 +73,11 @@ class SliceView(QWidget):
         self._segment_preview_is_erasing = False
         self._segment_preview_color: Tuple[int, int, int] = (0, 255, 0)  # Default green
 
+        # Line segment preview
+        self._lineseg_preview_start: Optional[Tuple[float, float]] = None
+        self._lineseg_preview_end: Optional[Tuple[float, float]] = None
+        self._lineseg_preview_color: Tuple[int, int, int] = (255, 0, 0)
+
         self._setup_ui()
 
     def _setup_ui(self):
@@ -391,6 +396,30 @@ class SliceView(QWidget):
                     painter.setPen(QPen(Qt.white, 1))
                     painter.drawText(int(x2d + r + 2), int(y2d), kp.label)
 
+        # Draw line segments
+        if self.show_annotations and self._annotations is not None:
+            lineseg_on_slice = self._annotations.get_line_segments_on_slice(
+                self.plane, self.current_slice
+            )
+            for idx, ls, ((x1, y1), (x2, y2)) in lineseg_on_slice:
+                color = QColor(*ls.color)
+                pen = QPen(color, config.LINESEG_LINE_WIDTH)
+                painter.setPen(pen)
+                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+                # Draw endpoint markers
+                painter.setBrush(QBrush(color))
+                r = 3  # Small radius for endpoints
+                painter.drawEllipse(QPointF(x1, y1), r, r)
+                painter.drawEllipse(QPointF(x2, y2), r, r)
+
+                # Draw label at midpoint if present
+                if ls.label:
+                    mid_x = (x1 + x2) / 2
+                    mid_y = (y1 + y2) / 2
+                    painter.setPen(QPen(Qt.white, 1))
+                    painter.drawText(int(mid_x + 5), int(mid_y), ls.label)
+
         # Draw brush preview
         if self._brush_preview_points:
             pen = QPen(QColor(255, 255, 0, 200), self._brush_preview_size,
@@ -429,6 +458,20 @@ class SliceView(QWidget):
             closed_path.closeSubpath()
             painter.drawPath(closed_path)
 
+        # Draw line segment preview
+        if self._lineseg_preview_start is not None and self._lineseg_preview_end is not None:
+            r, g, b = self._lineseg_preview_color
+            color = QColor(r, g, b, 200)
+            pen = QPen(color, config.LINESEG_LINE_WIDTH, Qt.DashLine)
+            painter.setPen(pen)
+            x1, y1 = self._lineseg_preview_start
+            x2, y2 = self._lineseg_preview_end
+            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+            # Draw start point marker
+            painter.setBrush(QBrush(color))
+            painter.drawEllipse(QPointF(x1, y1), 4, 4)
+
         painter.end()
         self.annotation_overlay_item.setPixmap(pixmap)
 
@@ -460,6 +503,30 @@ class SliceView(QWidget):
     def clear_segment_preview(self):
         """Clear segment contour preview."""
         self._segment_preview_path = None
+        self._update_annotation_overlay()
+
+    def set_lineseg_preview(
+        self,
+        start: Tuple[float, float],
+        end: Tuple[float, float],
+        color: Tuple[int, int, int] = (255, 0, 0)
+    ):
+        """Set line segment preview for display.
+
+        Args:
+            start: (x, y) start point in scene coordinates
+            end: (x, y) end point (cursor position)
+            color: RGB tuple for the label color
+        """
+        self._lineseg_preview_start = start
+        self._lineseg_preview_end = end
+        self._lineseg_preview_color = color
+        self._update_annotation_overlay()
+
+    def clear_lineseg_preview(self):
+        """Clear line segment preview."""
+        self._lineseg_preview_start = None
+        self._lineseg_preview_end = None
         self._update_annotation_overlay()
 
     def fit_view(self):

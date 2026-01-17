@@ -78,6 +78,79 @@ class Keypoint:
 
 
 @dataclass
+class LineSegment:
+    """3D line segment defined by two endpoints.
+
+    Both points are stored in volume space. Line segments
+    are constrained to a single slice plane.
+    """
+
+    x1: float
+    y1: float
+    z1: float
+    x2: float
+    y2: float
+    z2: float
+    label: str = ""
+    color: Tuple[int, int, int] = (255, 0, 0)
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for serialization."""
+        return {
+            "x1": self.x1,
+            "y1": self.y1,
+            "z1": self.z1,
+            "x2": self.x2,
+            "y2": self.y2,
+            "z2": self.z2,
+            "label": self.label,
+            "color": list(self.color),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LineSegment":
+        """Create from dictionary."""
+        return cls(
+            x1=d["x1"],
+            y1=d["y1"],
+            z1=d["z1"],
+            x2=d["x2"],
+            y2=d["y2"],
+            z2=d["z2"],
+            label=d.get("label", ""),
+            color=tuple(d.get("color", (255, 0, 0))),
+        )
+
+    def get_2d_positions(
+        self, plane: str, slice_index: int
+    ) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+        """Get 2D positions if line segment is visible on given slice.
+
+        Args:
+            plane: One of 'axial', 'sagittal', 'coronal'
+            slice_index: Current slice index
+
+        Returns:
+            Tuple of ((x1, y1), (x2, y2)) in 2D view coordinates, or None if not on this slice
+        """
+        tolerance = 0.5  # Half-voxel tolerance
+
+        if plane == "axial":
+            # Axial shows X-Y plane, Z is fixed
+            if abs(self.z1 - slice_index) <= tolerance and abs(self.z2 - slice_index) <= tolerance:
+                return ((self.x1, self.y1), (self.x2, self.y2))
+        elif plane == "sagittal":
+            # Sagittal shows Y-Z plane, X is fixed
+            if abs(self.x1 - slice_index) <= tolerance and abs(self.x2 - slice_index) <= tolerance:
+                return ((self.y1, self.z1), (self.y2, self.z2))
+        elif plane == "coronal":
+            # Coronal shows X-Z plane, Y is fixed
+            if abs(self.y1 - slice_index) <= tolerance and abs(self.y2 - slice_index) <= tolerance:
+                return ((self.x1, self.z1), (self.x2, self.z2))
+        return None
+
+
+@dataclass
 class MaskAnnotation:
     """3D binary mask annotation with label.
 
@@ -143,12 +216,13 @@ class MaskAnnotation:
 class Annotations:
     """Container for all annotations for a single patient.
 
-    Manages keypoints and multiple mask labels, tracking
+    Manages keypoints, line segments, and multiple mask labels, tracking
     modification state for save prompts.
     """
 
     patient_id: str
     keypoints: List[Keypoint] = field(default_factory=list)
+    line_segments: List[LineSegment] = field(default_factory=list)
     masks: Dict[int, MaskAnnotation] = field(default_factory=dict)
     modified: bool = False
 
@@ -186,6 +260,93 @@ class Annotations:
             self.remove_keypoint(distances[0][0])
             return True
         return False
+
+    def add_line_segment(self, ls: LineSegment) -> None:
+        """Add a new line segment."""
+        self.line_segments.append(ls)
+        self.modified = True
+
+    def remove_line_segment(self, index: int) -> None:
+        """Remove line segment by index."""
+        if 0 <= index < len(self.line_segments):
+            self.line_segments.pop(index)
+            self.modified = True
+
+    def remove_nearest_line_segment(
+        self, x: float, y: float, z: float, max_distance: float = 15.0
+    ) -> bool:
+        """Remove the line segment nearest to given 3D position.
+
+        Uses perpendicular distance to line segment.
+
+        Args:
+            x, y, z: Target position
+            max_distance: Maximum distance to consider
+
+        Returns:
+            True if a line segment was removed
+        """
+        if not self.line_segments:
+            return False
+
+        def point_to_segment_distance(px, py, pz, ls):
+            """Calculate distance from point to line segment."""
+            # Vector from p1 to p2
+            dx = ls.x2 - ls.x1
+            dy = ls.y2 - ls.y1
+            dz = ls.z2 - ls.z1
+
+            # Vector from p1 to point
+            fx = px - ls.x1
+            fy = py - ls.y1
+            fz = pz - ls.z1
+
+            segment_len_sq = dx * dx + dy * dy + dz * dz
+            if segment_len_sq == 0:
+                # Degenerate segment (single point)
+                return np.sqrt(fx * fx + fy * fy + fz * fz)
+
+            # Parameter t for closest point on infinite line
+            t = (fx * dx + fy * dy + fz * dz) / segment_len_sq
+            t = max(0, min(1, t))  # Clamp to segment
+
+            # Closest point on segment
+            cx = ls.x1 + t * dx
+            cy = ls.y1 + t * dy
+            cz = ls.z1 + t * dz
+
+            # Distance
+            return np.sqrt((px - cx) ** 2 + (py - cy) ** 2 + (pz - cz) ** 2)
+
+        distances = [
+            (i, point_to_segment_distance(x, y, z, ls))
+            for i, ls in enumerate(self.line_segments)
+        ]
+        distances.sort(key=lambda x: x[1])
+
+        if distances[0][1] <= max_distance:
+            self.remove_line_segment(distances[0][0])
+            return True
+        return False
+
+    def get_line_segments_on_slice(
+        self, plane: str, slice_index: int
+    ) -> List[Tuple[int, LineSegment, Tuple[Tuple[float, float], Tuple[float, float]]]]:
+        """Get all line segments visible on given slice.
+
+        Args:
+            plane: One of 'axial', 'sagittal', 'coronal'
+            slice_index: Current slice index
+
+        Returns:
+            List of (index, line_segment, ((x1_2d, y1_2d), (x2_2d, y2_2d))) tuples
+        """
+        result = []
+        for i, ls in enumerate(self.line_segments):
+            pos_2d = ls.get_2d_positions(plane, slice_index)
+            if pos_2d is not None:
+                result.append((i, ls, pos_2d))
+        return result
 
     def get_or_create_mask(
         self, label_id: int, label_name: str, volume_shape: Tuple[int, int, int],
@@ -263,6 +424,7 @@ class Annotations:
         return {
             "patient_id": self.patient_id,
             "keypoints": [kp.to_dict() for kp in self.keypoints],
+            "line_segments": [ls.to_dict() for ls in self.line_segments],
             "masks": {str(k): v.to_dict() for k, v in self.masks.items()},
         }
 
@@ -281,6 +443,7 @@ class Annotations:
         """
         ann = cls(patient_id=d["patient_id"])
         ann.keypoints = [Keypoint.from_dict(kp) for kp in d.get("keypoints", [])]
+        ann.line_segments = [LineSegment.from_dict(ls) for ls in d.get("line_segments", [])]
 
         for label_id_str, mask_info in d.get("masks", {}).items():
             label_id = int(label_id_str)

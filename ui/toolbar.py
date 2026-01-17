@@ -75,10 +75,16 @@ class ToolBar(QToolBar):
         self.segment_button.setToolTip("Segment mode - Draw contour to fill (4)")
         self.tool_button_group.addButton(self.segment_button)
 
+        self.lineseg_button = QPushButton("Line")
+        self.lineseg_button.setCheckable(True)
+        self.lineseg_button.setToolTip("Line segment mode - Two clicks to draw (5)")
+        self.tool_button_group.addButton(self.lineseg_button)
+
         self.addWidget(self.view_button)
         self.addWidget(self.keypoint_button)
         self.addWidget(self.brush_button)
         self.addWidget(self.segment_button)
+        self.addWidget(self.lineseg_button)
 
         # Connect button group
         self.tool_button_group.buttonClicked.connect(self._on_tool_button_clicked)
@@ -112,6 +118,8 @@ class ToolBar(QToolBar):
             self._set_tool("brush")
         elif button == self.segment_button:
             self._set_tool("segment")
+        elif button == self.lineseg_button:
+            self._set_tool("lineseg")
 
     def _set_tool(self, tool_name: str):
         """Set the current tool."""
@@ -133,6 +141,8 @@ class ToolBar(QToolBar):
             self.brush_button.setChecked(True)
         elif tool_name == "segment":
             self.segment_button.setChecked(True)
+        elif tool_name == "lineseg":
+            self.lineseg_button.setChecked(True)
         self._set_tool(tool_name)
 
     def get_current_tool(self) -> str:

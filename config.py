@@ -63,6 +63,9 @@ DEFAULT_BRUSH_SIZE = 10
 MIN_BRUSH_SIZE = 1
 MAX_BRUSH_SIZE = 50
 
+# Line segment settings
+LINESEG_LINE_WIDTH = 2
+
 # Mask overlay opacity (0-255)
 DEFAULT_MASK_OPACITY = 128
 

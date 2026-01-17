@@ -12,7 +12,7 @@ from PySide6.QtGui import QKeySequence, QShortcut, QCursor, QPainterPath
 
 import config
 from core.patient import Patient
-from core.annotation import Keypoint, Annotations
+from core.annotation import Keypoint, LineSegment, Annotations
 from .slice_view import SliceView
 from .controls import ControlsWidget
 from .patient_list import PatientListWidget
@@ -51,6 +51,18 @@ class MainWindow(QMainWindow):
         self._segment_plane: Optional[str] = None
         self._segment_slice: Optional[int] = None
         self._segment_is_erasing = False
+
+        # Line segment tool state
+        self._lineseg_first_point: Optional[Tuple[float, float, float]] = None
+        self._lineseg_plane: Optional[str] = None
+        self._lineseg_slice: Optional[int] = None
+
+        # Line segment endpoint dragging state (shift+drag)
+        self._lineseg_dragging: bool = False
+        self._lineseg_drag_index: Optional[int] = None  # Index of line segment being edited
+        self._lineseg_drag_endpoint: Optional[str] = None  # "start" or "end"
+        self._lineseg_drag_plane: Optional[str] = None
+        self._lineseg_drag_slice: Optional[int] = None
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -111,6 +123,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("2"), self, lambda: self.toolbar.set_tool("keypoint"))
         QShortcut(QKeySequence("3"), self, lambda: self.toolbar.set_tool("brush"))
         QShortcut(QKeySequence("4"), self, lambda: self.toolbar.set_tool("segment"))
+        QShortcut(QKeySequence("5"), self, lambda: self.toolbar.set_tool("lineseg"))
 
         # Save
         QShortcut(QKeySequence("Ctrl+S"), self, self._save_current)
@@ -151,6 +164,10 @@ class MainWindow(QMainWindow):
 
     def _on_tool_changed(self, tool_name: str):
         """Handle tool change."""
+        # Cancel any in-progress line segment when switching tools
+        if self._lineseg_first_point is not None:
+            self._cancel_lineseg()
+
         self._current_tool = tool_name
 
         # Update cursor for views
@@ -161,6 +178,8 @@ class MainWindow(QMainWindow):
         elif tool_name == "brush":
             cursor = Qt.CrossCursor
         elif tool_name == "segment":
+            cursor = Qt.CrossCursor
+        elif tool_name == "lineseg":
             cursor = Qt.CrossCursor
         else:
             cursor = Qt.ArrowCursor
@@ -261,6 +280,11 @@ class MainWindow(QMainWindow):
             return
 
         if event.button() == Qt.LeftButton:
+            # Check for shift+click to drag line segment endpoint
+            if self._current_tool == "lineseg" and event.modifiers() == Qt.ShiftModifier:
+                if self._start_lineseg_drag(plane, slice_idx, scene_pos):
+                    return
+
             if self._current_tool == "keypoint":
                 self._add_keypoint(plane, slice_idx, scene_pos)
             elif self._current_tool == "brush":
@@ -269,6 +293,8 @@ class MainWindow(QMainWindow):
             elif self._current_tool == "segment":
                 self._segment_is_erasing = False
                 self._start_segment(plane, slice_idx, scene_pos)
+            elif self._current_tool == "lineseg":
+                self._handle_lineseg_click(plane, slice_idx, scene_pos)
         elif event.button() == Qt.RightButton:
             if self._current_tool == "keypoint":
                 self._remove_keypoint(plane, slice_idx, scene_pos)
@@ -278,6 +304,8 @@ class MainWindow(QMainWindow):
             elif self._current_tool == "segment":
                 self._segment_is_erasing = True
                 self._start_segment(plane, slice_idx, scene_pos)
+            elif self._current_tool == "lineseg":
+                self._remove_line_segment(plane, slice_idx, scene_pos)
 
     def _on_view_mouse_moved(self, plane: str, slice_idx: int, scene_pos: QPointF, event):
         """Handle mouse move on a view."""
@@ -288,13 +316,25 @@ class MainWindow(QMainWindow):
             self._continue_brush_stroke(plane, slice_idx, scene_pos)
         elif self._is_drawing and self._current_tool == "segment":
             self._continue_segment(plane, slice_idx, scene_pos)
+        elif self._lineseg_dragging:
+            self._continue_lineseg_drag(plane, slice_idx, scene_pos)
+        elif self._current_tool == "lineseg" and self._lineseg_first_point is not None:
+            self._update_lineseg_preview(plane, slice_idx, scene_pos)
 
     def _on_view_mouse_released(self, plane: str, slice_idx: int, scene_pos: QPointF, event):
         """Handle mouse release on a view."""
         if self._current_patient is None:
             return
 
-        if event.button() in (Qt.LeftButton, Qt.RightButton):
+        if event.button() == Qt.LeftButton:
+            if self._lineseg_dragging:
+                self._end_lineseg_drag(plane, slice_idx, scene_pos)
+            elif self._is_drawing and self._current_tool == "brush":
+                self._end_brush_stroke(plane, slice_idx)
+                self._temp_erase_mode = False
+            elif self._is_drawing and self._current_tool == "segment":
+                self._end_segment(plane, slice_idx)
+        elif event.button() == Qt.RightButton:
             if self._is_drawing and self._current_tool == "brush":
                 self._end_brush_stroke(plane, slice_idx)
                 self._temp_erase_mode = False
@@ -540,6 +580,199 @@ class MainWindow(QMainWindow):
             self._segment_plane = None
             self._segment_slice = None
             self._segment_is_erasing = False
+
+    def _handle_lineseg_click(self, plane: str, slice_idx: int, scene_pos: QPointF):
+        """Handle click in line segment mode."""
+        x2d, y2d = scene_pos.x(), scene_pos.y()
+
+        # Convert 2D to 3D coordinates based on plane
+        if plane == "axial":
+            x, y, z = x2d, y2d, float(slice_idx)
+        elif plane == "sagittal":
+            x, y, z = float(slice_idx), x2d, y2d
+        else:  # coronal
+            x, y, z = x2d, float(slice_idx), y2d
+
+        if self._lineseg_first_point is None:
+            # First click - store the start point
+            self._lineseg_first_point = (x, y, z)
+            self._lineseg_plane = plane
+            self._lineseg_slice = slice_idx
+            self.status_bar.showMessage(
+                f"Line segment: first point at ({x:.1f}, {y:.1f}, {z:.1f}) - click to set second point"
+            )
+        else:
+            # Second click - complete the line segment
+            if plane != self._lineseg_plane or slice_idx != self._lineseg_slice:
+                # Different plane/slice - cancel and restart
+                self.status_bar.showMessage("Line segment cancelled - points must be on the same slice")
+                self._cancel_lineseg()
+                return
+
+            x1, y1, z1 = self._lineseg_first_point
+            label_id, label_name, color = self.controls.get_current_label()
+
+            ls = LineSegment(
+                x1=x1, y1=y1, z1=z1,
+                x2=x, y2=y, z2=z,
+                label=label_name, color=color
+            )
+
+            self._current_patient.annotations.add_line_segment(ls)
+
+            # Clear state and update
+            self._cancel_lineseg()
+            self._update_all_views()
+            self.patient_list.refresh_display()
+
+            self.status_bar.showMessage(
+                f"Added line segment from ({x1:.1f}, {y1:.1f}, {z1:.1f}) to ({x:.1f}, {y:.1f}, {z:.1f})"
+            )
+
+    def _update_lineseg_preview(self, plane: str, slice_idx: int, scene_pos: QPointF):
+        """Update line segment preview as cursor moves."""
+        if self._lineseg_plane != plane:
+            return
+
+        x2d, y2d = scene_pos.x(), scene_pos.y()
+        x1, y1, z1 = self._lineseg_first_point
+
+        # Get 2D coordinates of first point for this plane
+        if plane == "axial":
+            start_2d = (x1, y1)
+        elif plane == "sagittal":
+            start_2d = (y1, z1)
+        else:  # coronal
+            start_2d = (x1, z1)
+
+        _, _, color = self.controls.get_current_label()
+        view = self._get_view_for_plane(plane)
+        view.set_lineseg_preview(start_2d, (x2d, y2d), color)
+
+    def _cancel_lineseg(self):
+        """Cancel the current line segment operation."""
+        if self._lineseg_plane:
+            view = self._get_view_for_plane(self._lineseg_plane)
+            view.clear_lineseg_preview()
+        self._lineseg_first_point = None
+        self._lineseg_plane = None
+        self._lineseg_slice = None
+
+    def _remove_line_segment(self, plane: str, slice_idx: int, scene_pos: QPointF):
+        """Remove nearest line segment to clicked position."""
+        x2d, y2d = scene_pos.x(), scene_pos.y()
+
+        # Convert 2D to 3D coordinates
+        if plane == "axial":
+            x, y, z = x2d, y2d, float(slice_idx)
+        elif plane == "sagittal":
+            x, y, z = float(slice_idx), x2d, y2d
+        else:
+            x, y, z = x2d, float(slice_idx), y2d
+
+        if self._current_patient.annotations.remove_nearest_line_segment(x, y, z):
+            self._update_all_views()
+            self.patient_list.refresh_display()
+            self.status_bar.showMessage("Removed line segment")
+
+    def _start_lineseg_drag(self, plane: str, slice_idx: int, scene_pos: QPointF) -> bool:
+        """Start dragging a line segment endpoint.
+
+        Returns True if an endpoint was found to drag.
+        """
+        x2d, y2d = scene_pos.x(), scene_pos.y()
+
+        # Find nearest endpoint
+        lineseg_on_slice = self._current_patient.annotations.get_line_segments_on_slice(
+            plane, slice_idx
+        )
+
+        if not lineseg_on_slice:
+            return False
+
+        # Find the closest endpoint
+        min_dist = float('inf')
+        best_idx = None
+        best_endpoint = None
+
+        for idx, ls, ((x1, y1), (x2, y2)) in lineseg_on_slice:
+            # Distance to start point
+            dist_start = ((x2d - x1) ** 2 + (y2d - y1) ** 2) ** 0.5
+            if dist_start < min_dist:
+                min_dist = dist_start
+                best_idx = idx
+                best_endpoint = "start"
+
+            # Distance to end point
+            dist_end = ((x2d - x2) ** 2 + (y2d - y2) ** 2) ** 0.5
+            if dist_end < min_dist:
+                min_dist = dist_end
+                best_idx = idx
+                best_endpoint = "end"
+
+        # Only start drag if close enough (within 15 pixels)
+        if min_dist > 15:
+            return False
+
+        self._lineseg_dragging = True
+        self._lineseg_drag_index = best_idx
+        self._lineseg_drag_endpoint = best_endpoint
+        self._lineseg_drag_plane = plane
+        self._lineseg_drag_slice = slice_idx
+
+        self.status_bar.showMessage(
+            f"Dragging line segment {best_endpoint} point - release to place"
+        )
+        return True
+
+    def _continue_lineseg_drag(self, plane: str, slice_idx: int, scene_pos: QPointF):
+        """Continue dragging a line segment endpoint."""
+        if not self._lineseg_dragging:
+            return
+
+        if plane != self._lineseg_drag_plane:
+            return
+
+        x2d, y2d = scene_pos.x(), scene_pos.y()
+
+        # Get the line segment being dragged
+        ls = self._current_patient.annotations.line_segments[self._lineseg_drag_index]
+
+        # Convert new position to 3D
+        if plane == "axial":
+            new_x, new_y, new_z = x2d, y2d, float(slice_idx)
+        elif plane == "sagittal":
+            new_x, new_y, new_z = float(slice_idx), x2d, y2d
+        else:  # coronal
+            new_x, new_y, new_z = x2d, float(slice_idx), y2d
+
+        # Update the appropriate endpoint
+        if self._lineseg_drag_endpoint == "start":
+            ls.x1, ls.y1, ls.z1 = new_x, new_y, new_z
+        else:
+            ls.x2, ls.y2, ls.z2 = new_x, new_y, new_z
+
+        self._current_patient.annotations.modified = True
+        self._update_all_views()
+
+    def _end_lineseg_drag(self, plane: str, slice_idx: int, scene_pos: QPointF):
+        """End dragging a line segment endpoint."""
+        if not self._lineseg_dragging:
+            return
+
+        # Apply final position
+        self._continue_lineseg_drag(plane, slice_idx, scene_pos)
+
+        # Reset drag state
+        self._lineseg_dragging = False
+        self._lineseg_drag_index = None
+        self._lineseg_drag_endpoint = None
+        self._lineseg_drag_plane = None
+        self._lineseg_drag_slice = None
+
+        self._update_all_views()
+        self.patient_list.refresh_display()
+        self.status_bar.showMessage("Line segment endpoint moved")
 
     def _get_view_for_plane(self, plane: str) -> SliceView:
         """Get the view widget for a given plane."""

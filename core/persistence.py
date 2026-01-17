@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, Optional
 import numpy as np
 
-from .annotation import Annotations, Keypoint, MaskAnnotation
+from .annotation import Annotations, Keypoint, LineSegment, MaskAnnotation
 from .patient import Patient
 
 
@@ -34,6 +34,7 @@ def save_patient_annotations(patient: Patient, output_dir: Path) -> None:
         "image_path": patient.image_path,
         "mask_path": patient.mask_path,
         "keypoints": [kp.to_dict() for kp in ann.keypoints],
+        "line_segments": [ls.to_dict() for ls in ann.line_segments],
         "masks": {},
     }
 
@@ -85,6 +86,9 @@ def load_patient_annotations(
 
     # Load keypoints
     ann.keypoints = [Keypoint.from_dict(kp) for kp in data.get("keypoints", [])]
+
+    # Load line segments
+    ann.line_segments = [LineSegment.from_dict(ls) for ls in data.get("line_segments", [])]
 
     # Load masks
     masks_file = annotations_dir / f"{patient_id}_masks.npz"
