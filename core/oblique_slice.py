@@ -1,9 +1,17 @@
 """Oblique plane definition and slice extraction for cardiac view planning."""
 
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Tuple, Optional, NamedTuple
 import numpy as np
 from scipy.ndimage import map_coordinates
+
+
+class P4CHPlaneResult(NamedTuple):
+    """Result from P4CH plane creation, including rotation optimization info."""
+    plane: 'ObliquePlane'
+    rotation_axis: np.ndarray  # Long axis (rotation axis)
+    base_normal: np.ndarray    # Normal at 0 degrees
+    base_u_axis: np.ndarray    # U-axis at 0 degrees
 
 
 def normalize(v: np.ndarray) -> np.ndarray:
@@ -194,8 +202,9 @@ def create_p4ch_plane_from_p2ch_line(
     line_2d_x1: float, line_2d_y1: float, line_2d_x2: float, line_2d_y2: float,
     p2ch_plane: ObliquePlane, volume_shape: Tuple[int, int, int],
     rotation_degrees: float = 0.0,
-    rotation_mode: str = "long_axis"
-) -> ObliquePlane:
+    rotation_mode: str = "long_axis",
+    return_rotation_info: bool = False
+):
     """Create pseudo-4ch plane from a line segment on the p2ch view.
 
     The p4ch plane passes through the first endpoint of the line (valve point)
@@ -214,9 +223,11 @@ def create_p4ch_plane_from_p2ch_line(
         rotation_mode: Either 'long_axis' (default) or 'perp_p2ch'
             - 'long_axis': 0° = same viewing direction as p2ch
             - 'perp_p2ch': 0° = perpendicular to p2ch plane
+        return_rotation_info: If True, return P4CHPlaneResult with rotation info
+            for optimized local rotation computation
 
     Returns:
-        ObliquePlane for the pseudo-4ch view
+        ObliquePlane for the pseudo-4ch view, or P4CHPlaneResult if return_rotation_info=True
     """
     z_dim, y_dim, x_dim = volume_shape
 
@@ -263,6 +274,9 @@ def create_p4ch_plane_from_p2ch_line(
     # U-axis: perpendicular to both v_axis and normal (horizontal in image)
     u_axis = normalize(np.cross(v_axis, p4ch_normal))
 
+    # Compute base u_axis (at 0 degrees) for rotation optimization
+    base_u_axis = normalize(np.cross(v_axis, base_normal))
+
     # Origin: valve point (the plane passes through valve)
     origin = valve_3d.copy()
 
@@ -270,7 +284,7 @@ def create_p4ch_plane_from_p2ch_line(
     width = int(max(x_dim, y_dim) * 1.5)
     height = z_dim
 
-    return ObliquePlane(
+    plane = ObliquePlane(
         origin=origin,
         u_axis=u_axis,
         v_axis=v_axis,
@@ -278,6 +292,16 @@ def create_p4ch_plane_from_p2ch_line(
         width=width,
         height=height
     )
+
+    if return_rotation_info:
+        return P4CHPlaneResult(
+            plane=plane,
+            rotation_axis=long_axis,
+            base_normal=base_normal,
+            base_u_axis=base_u_axis
+        )
+
+    return plane
 
 
 def create_sax_plane_from_p4ch_line(

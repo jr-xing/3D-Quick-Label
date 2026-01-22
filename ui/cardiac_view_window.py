@@ -111,6 +111,12 @@ class ObliqueSliceView(QWidget):
         self._is_panning = False
         self._pan_start = None
 
+        # Rotation optimization: store axis info for local rotation computation
+        # This avoids expensive plane regeneration on every rotation slider tick
+        self._rotation_axis: Optional[np.ndarray] = None
+        self._base_normal: Optional[np.ndarray] = None
+        self._base_u_axis: Optional[np.ndarray] = None
+
         self._setup_ui()
 
     def _setup_ui(self):
@@ -299,8 +305,35 @@ class ObliqueSliceView(QWidget):
         """Handle rotation slider change."""
         if self.rotation_value_label:
             self.rotation_value_label.setText(f"{value}°")
-        # Emit signal so parent can regenerate the plane
-        self.rotation_changed.emit(self.view_name, float(value))
+
+        # Fast path: if we have rotation info, compute locally without parent signal
+        if self._rotation_axis is not None and self._plane is not None:
+            self._apply_rotation(float(value))
+        else:
+            # Fallback: emit signal so parent can regenerate the plane
+            self.rotation_changed.emit(self.view_name, float(value))
+
+    def _apply_rotation(self, degrees: float):
+        """Apply rotation around stored axis using Rodrigues' formula.
+
+        This is the fast path for rotation - it updates the plane normal and u_axis
+        in-place without regenerating the entire plane from scratch.
+        """
+        theta = np.radians(degrees)
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+        k = self._rotation_axis
+
+        # Rodrigues' formula: v_rot = v*cos(θ) + (k×v)*sin(θ) + k*(k·v)*(1-cos(θ))
+        # Since base_normal and base_u_axis are perpendicular to k, the (k·v) term is 0
+        new_normal = self._base_normal * cos_t + np.cross(k, self._base_normal) * sin_t
+        new_u_axis = self._base_u_axis * cos_t + np.cross(k, self._base_u_axis) * sin_t
+
+        # Update plane in-place (normalize for numerical stability)
+        self._plane.normal = new_normal / np.linalg.norm(new_normal)
+        self._plane.u_axis = new_u_axis / np.linalg.norm(new_u_axis)
+
+        self.update_display()
 
     def get_rotation(self) -> float:
         """Get current rotation angle in degrees."""
@@ -337,6 +370,27 @@ class ObliqueSliceView(QWidget):
             if index >= 0:
                 self.rotation_mode_combo.setCurrentIndex(index)
             self.rotation_mode_combo.blockSignals(False)
+
+    def set_rotation_info(self, rotation_axis: np.ndarray, base_normal: np.ndarray, base_u_axis: np.ndarray):
+        """Store rotation axis for local rotation computation.
+
+        This enables fast local rotation without regenerating the entire plane.
+        The rotation is applied using Rodrigues' formula around the rotation axis.
+
+        Args:
+            rotation_axis: Unit vector defining the axis of rotation (long axis)
+            base_normal: The plane normal at 0 degrees rotation
+            base_u_axis: The plane u_axis at 0 degrees rotation
+        """
+        self._rotation_axis = rotation_axis.copy()
+        self._base_normal = base_normal.copy()
+        self._base_u_axis = base_u_axis.copy()
+
+    def clear_rotation_info(self):
+        """Clear rotation info (e.g., when rotation mode changes)."""
+        self._rotation_axis = None
+        self._base_normal = None
+        self._base_u_axis = None
 
     def set_plane(self, volume: VolumeData, plane: ObliquePlane,
                   scroll_range: Tuple[float, float] = (-100, 100)):
@@ -907,24 +961,36 @@ class CardiacViewWindow(QMainWindow):
         if not pos1 or not pos2:
             return
 
-        plane = create_p4ch_plane_from_p2ch_line(
+        # Get plane with rotation info for optimized local rotation
+        result = create_p4ch_plane_from_p2ch_line(
             pos1[0], pos1[1], pos2[0], pos2[1],
             p2ch_plane, volume.shape,
             rotation_degrees=rotation_degrees,
-            rotation_mode=rotation_mode
+            rotation_mode=rotation_mode,
+            return_rotation_info=True
         )
 
-        self._oblique_planes['p4ch'] = plane
-        self._bottom_views['p4ch'].set_plane(volume, plane)
+        self._oblique_planes['p4ch'] = result.plane
+        self._bottom_views['p4ch'].set_plane(volume, result.plane)
+
+        # Store rotation info for fast local rotation computation
+        self._bottom_views['p4ch'].set_rotation_info(
+            rotation_axis=result.rotation_axis,
+            base_normal=result.base_normal,
+            base_u_axis=result.base_u_axis
+        )
 
     def _on_p4ch_rotation_changed(self, view_name: str, rotation_degrees: float):
-        """Handle p4ch rotation slider change."""
-        # Regenerate p4ch with new rotation
+        """Handle p4ch rotation slider change (fallback when local rotation unavailable)."""
+        # This is only called when local rotation info is not available
+        # (e.g., on first setup before set_rotation_info is called)
         self._generate_p4ch_view(rotation_degrees)
 
     def _on_p4ch_rotation_mode_changed(self, view_name: str, rotation_mode: str):
         """Handle p4ch rotation mode change."""
-        # Regenerate p4ch with new mode
+        # Clear rotation info since base normal changes with mode
+        self._bottom_views['p4ch'].clear_rotation_info()
+        # Regenerate p4ch with new mode (will set new rotation info)
         self._generate_p4ch_view(rotation_mode=rotation_mode)
 
     def _generate_sax_view(self):
