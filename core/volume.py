@@ -30,6 +30,11 @@ class VolumeData:
     def load(self) -> None:
         """Load NIfTI file using SimpleITK."""
         self._image = sitk.ReadImage(self.filepath)
+
+        # Reorient to RAS (Right-Anterior-Superior) standard orientation
+        # This ensures axial=XY, sagittal=YZ, coronal=XZ regardless of original orientation
+        self._image = sitk.DICOMOrient(self._image, 'RAS')
+
         # SimpleITK GetArrayFromImage returns (z, y, x) ordering
         self._array = sitk.GetArrayFromImage(self._image)
         self.shape = self._array.shape
@@ -130,13 +135,48 @@ class VolumeData:
         else:
             raise ValueError(f"Unknown plane: {plane}")
 
-    def get_value_range(self) -> Tuple[float, float]:
-        """Get min/max values for windowing.
+    def get_value_range(self, percentile_low: float = 1, percentile_high: float = 99) -> Tuple[float, float]:
+        """Get value range for windowing using percentiles.
+
+        Using percentiles (default 1st and 99th) excludes outliers and
+        provides better contrast than full min/max range.
+
+        Args:
+            percentile_low: Lower percentile (default 1)
+            percentile_high: Upper percentile (default 99)
 
         Returns:
             Tuple of (min_value, max_value)
         """
-        return float(self.array.min()), float(self.array.max())
+        return (
+            float(np.percentile(self.array, percentile_low)),
+            float(np.percentile(self.array, percentile_high))
+        )
+
+    def get_slice_aspect_ratio(self, plane: str) -> float:
+        """Get aspect ratio (width/height) accounting for voxel spacing.
+
+        Returns ratio to scale display width: if >1, image should be wider;
+        if <1, image should be taller.
+
+        Args:
+            plane: One of 'axial', 'sagittal', 'coronal'
+
+        Returns:
+            Aspect ratio multiplier for width
+        """
+        # spacing is (z, y, x)
+        sz, sy, sx = self.spacing
+        if plane == "axial":
+            # slice is (Y, X), display aspect = X_spacing / Y_spacing
+            return sx / sy if sy != 0 else 1.0
+        elif plane == "sagittal":
+            # slice is (Z, Y), display aspect = Y_spacing / Z_spacing
+            return sy / sz if sz != 0 else 1.0
+        elif plane == "coronal":
+            # slice is (Z, X), display aspect = X_spacing / Z_spacing
+            return sx / sz if sz != 0 else 1.0
+        return 1.0
 
     def get_slice_shape(self, plane: str) -> Tuple[int, int]:
         """Get shape of slices for given plane.

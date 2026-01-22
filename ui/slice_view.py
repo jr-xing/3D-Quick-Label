@@ -78,6 +78,9 @@ class SliceView(QWidget):
         self._lineseg_preview_end: Optional[Tuple[float, float]] = None
         self._lineseg_preview_color: Tuple[int, int, int] = (255, 0, 0)
 
+        # Aspect ratio for coordinate conversion (set when displaying image)
+        self._aspect_ratio: float = 1.0
+
         self._setup_ui()
 
     def _setup_ui(self):
@@ -165,7 +168,9 @@ class SliceView(QWidget):
         scene_pos = self.view.mapToScene(event.pos())
         # Check if click is within image bounds
         if self._is_in_image_bounds(scene_pos):
-            self.mouse_pressed.emit(self.plane, self.current_slice, scene_pos, event)
+            # Convert to image coordinates (account for aspect ratio scaling)
+            image_pos = self._scene_to_image_coords(scene_pos)
+            self.mouse_pressed.emit(self.plane, self.current_slice, image_pos, event)
 
     def _handle_mouse_move(self, event: QMouseEvent):
         """Handle mouse move event."""
@@ -181,7 +186,9 @@ class SliceView(QWidget):
             return
 
         scene_pos = self.view.mapToScene(event.pos())
-        self.mouse_moved.emit(self.plane, self.current_slice, scene_pos, event)
+        # Convert to image coordinates (account for aspect ratio scaling)
+        image_pos = self._scene_to_image_coords(scene_pos)
+        self.mouse_moved.emit(self.plane, self.current_slice, image_pos, event)
 
     def _handle_mouse_release(self, event: QMouseEvent):
         """Handle mouse release event."""
@@ -191,7 +198,9 @@ class SliceView(QWidget):
             return
 
         scene_pos = self.view.mapToScene(event.pos())
-        self.mouse_released.emit(self.plane, self.current_slice, scene_pos, event)
+        # Convert to image coordinates (account for aspect ratio scaling)
+        image_pos = self._scene_to_image_coords(scene_pos)
+        self.mouse_released.emit(self.plane, self.current_slice, image_pos, event)
 
     def _handle_wheel(self, event: QWheelEvent):
         """Handle wheel event for zooming."""
@@ -298,7 +307,29 @@ class SliceView(QWidget):
         display = np.ascontiguousarray(display)
         qimage = QImage(display.data, w, h, w, QImage.Format_Grayscale8)
 
-        self.image_item.setPixmap(QPixmap.fromImage(qimage.copy()))
+        pixmap = QPixmap.fromImage(qimage.copy())
+
+        # Apply aspect ratio scaling to account for non-square voxels
+        self._aspect_ratio = 1.0
+        if self._volume is not None:
+            aspect = self._volume.get_slice_aspect_ratio(self.plane)
+            if abs(aspect - 1.0) > 0.01:  # Non-square pixels
+                self._aspect_ratio = aspect
+                new_width = int(pixmap.width() * aspect)
+                pixmap = pixmap.scaled(new_width, pixmap.height(),
+                                       Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
+        self.image_item.setPixmap(pixmap)
+
+    def _scene_to_image_coords(self, scene_pos: QPointF) -> QPointF:
+        """Convert scene coordinates to original image coordinates.
+
+        When aspect ratio scaling is applied, scene X coordinates need to be
+        divided by the aspect ratio to get back to original image space.
+        """
+        if abs(self._aspect_ratio - 1.0) > 0.01:
+            return QPointF(scene_pos.x() / self._aspect_ratio, scene_pos.y())
+        return scene_pos
 
     def _update_mask_overlay(self, debug=False):
         """Update the mask overlay (reference mask + user annotations)."""
@@ -362,7 +393,17 @@ class SliceView(QWidget):
         # Convert to QImage
         overlay = np.ascontiguousarray(overlay)
         qimage = QImage(overlay.data, w, h, w * 4, QImage.Format_RGBA8888)
-        self.mask_overlay_item.setPixmap(QPixmap.fromImage(qimage.copy()))
+        pixmap = QPixmap.fromImage(qimage.copy())
+
+        # Apply aspect ratio scaling to match image
+        if self._volume is not None:
+            aspect = self._volume.get_slice_aspect_ratio(self.plane)
+            if abs(aspect - 1.0) > 0.01:
+                new_width = int(pixmap.width() * aspect)
+                pixmap = pixmap.scaled(new_width, pixmap.height(),
+                                       Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
+        self.mask_overlay_item.setPixmap(pixmap)
 
     def _update_annotation_overlay(self):
         """Update the annotation overlay (keypoints, brush preview)."""
@@ -473,6 +514,15 @@ class SliceView(QWidget):
             painter.drawEllipse(QPointF(x1, y1), 4, 4)
 
         painter.end()
+
+        # Apply aspect ratio scaling to match image
+        if self._volume is not None:
+            aspect = self._volume.get_slice_aspect_ratio(self.plane)
+            if abs(aspect - 1.0) > 0.01:
+                new_width = int(pixmap.width() * aspect)
+                pixmap = pixmap.scaled(new_width, pixmap.height(),
+                                       Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
         self.annotation_overlay_item.setPixmap(pixmap)
 
     def set_brush_preview(self, points: List[Tuple[int, int]], size: int):
