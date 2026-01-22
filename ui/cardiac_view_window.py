@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QSlider,
     QLabel, QSplitter, QListWidget, QListWidgetItem, QMessageBox,
-    QFileDialog, QMenuBar, QSizePolicy
+    QFileDialog, QMenuBar, QSizePolicy, QComboBox
 )
 from PySide6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QPen, QBrush,
@@ -71,19 +71,24 @@ class ObliqueSliceView(QWidget):
     mouse_pressed = Signal(str, QPointF, object)  # view_name, scene_pos, event
     mouse_moved = Signal(str, QPointF, object)
     mouse_released = Signal(str, QPointF, object)
+    rotation_changed = Signal(str, float)  # view_name, rotation_degrees
+    rotation_mode_changed = Signal(str, str)  # view_name, mode ('long_axis' or 'perp_p2ch')
 
-    def __init__(self, view_name: str, title: str, scrollable: bool = False, parent=None):
+    def __init__(self, view_name: str, title: str, scrollable: bool = False,
+                 rotatable: bool = False, parent=None):
         """Initialize oblique slice view.
 
         Args:
             view_name: Identifier for this view (e.g., 'p2ch', 'p4ch', 'sax')
             title: Display title for the view
             scrollable: If True, show slider for scrolling through parallel planes
+            rotatable: If True, show slider for rotating the plane around long axis
         """
         super().__init__(parent)
         self.view_name = view_name
         self.title_text = title
         self.scrollable = scrollable
+        self.rotatable = rotatable
 
         # Data
         self._volume: Optional[VolumeData] = None
@@ -152,7 +157,7 @@ class ObliqueSliceView(QWidget):
         layout.addWidget(self.view, stretch=1)
         layout.addWidget(self.placeholder_label)
 
-        # Slider for scrollable views
+        # Slider for scrollable views (SAX)
         if self.scrollable:
             slider_layout = QHBoxLayout()
             self.slider = QSlider(Qt.Horizontal)
@@ -170,6 +175,42 @@ class ObliqueSliceView(QWidget):
         else:
             self.slider = None
             self.slice_label = None
+
+        # Rotation controls for rotatable views (p4ch)
+        if self.rotatable:
+            # Mode selector
+            mode_layout = QHBoxLayout()
+            mode_label = QLabel("Mode:")
+            self.rotation_mode_combo = QComboBox()
+            self.rotation_mode_combo.addItem("Rotate around long axis", "long_axis")
+            self.rotation_mode_combo.addItem("Perpendicular to p2ch", "perp_p2ch")
+            self.rotation_mode_combo.setCurrentIndex(0)  # Default: rotate around long axis
+            self.rotation_mode_combo.currentIndexChanged.connect(self._on_rotation_mode_changed)
+
+            mode_layout.addWidget(mode_label)
+            mode_layout.addWidget(self.rotation_mode_combo, stretch=1)
+            layout.addLayout(mode_layout)
+
+            # Rotation slider
+            rotation_layout = QHBoxLayout()
+            rotation_label = QLabel("Rotation:")
+            self.rotation_slider = QSlider(Qt.Horizontal)
+            self.rotation_slider.setMinimum(-180)
+            self.rotation_slider.setMaximum(180)
+            self.rotation_slider.setValue(0)
+            self.rotation_slider.valueChanged.connect(self._on_rotation_changed)
+
+            self.rotation_value_label = QLabel("0°")
+            self.rotation_value_label.setMinimumWidth(40)
+
+            rotation_layout.addWidget(rotation_label)
+            rotation_layout.addWidget(self.rotation_slider)
+            rotation_layout.addWidget(self.rotation_value_label)
+            layout.addLayout(rotation_layout)
+        else:
+            self.rotation_slider = None
+            self.rotation_value_label = None
+            self.rotation_mode_combo = None
 
         # Initially show placeholder
         self.view.hide()
@@ -253,6 +294,49 @@ class ObliqueSliceView(QWidget):
         if self.slice_label:
             self.slice_label.setText(str(value))
         self.update_display()
+
+    def _on_rotation_changed(self, value: int):
+        """Handle rotation slider change."""
+        if self.rotation_value_label:
+            self.rotation_value_label.setText(f"{value}°")
+        # Emit signal so parent can regenerate the plane
+        self.rotation_changed.emit(self.view_name, float(value))
+
+    def get_rotation(self) -> float:
+        """Get current rotation angle in degrees."""
+        if self.rotation_slider:
+            return float(self.rotation_slider.value())
+        return 0.0
+
+    def set_rotation(self, degrees: float):
+        """Set rotation angle without emitting signal."""
+        if self.rotation_slider:
+            self.rotation_slider.blockSignals(True)
+            self.rotation_slider.setValue(int(degrees))
+            self.rotation_slider.blockSignals(False)
+            if self.rotation_value_label:
+                self.rotation_value_label.setText(f"{int(degrees)}°")
+
+    def _on_rotation_mode_changed(self, index: int):
+        """Handle rotation mode combo box change."""
+        if self.rotation_mode_combo:
+            mode = self.rotation_mode_combo.currentData()
+            self.rotation_mode_changed.emit(self.view_name, mode)
+
+    def get_rotation_mode(self) -> str:
+        """Get current rotation mode ('long_axis' or 'perp_p2ch')."""
+        if self.rotation_mode_combo:
+            return self.rotation_mode_combo.currentData()
+        return "long_axis"
+
+    def set_rotation_mode(self, mode: str):
+        """Set rotation mode without emitting signal."""
+        if self.rotation_mode_combo:
+            self.rotation_mode_combo.blockSignals(True)
+            index = self.rotation_mode_combo.findData(mode)
+            if index >= 0:
+                self.rotation_mode_combo.setCurrentIndex(index)
+            self.rotation_mode_combo.blockSignals(False)
 
     def set_plane(self, volume: VolumeData, plane: ObliquePlane,
                   scroll_range: Tuple[float, float] = (-100, 100)):
@@ -471,15 +555,21 @@ class CardiacViewWindow(QMainWindow):
             grid_layout.addWidget(view, 0, col)
 
         # Bottom row: Oblique views
-        for col, (name, title, scrollable) in enumerate([
-            ('p2ch', 'Pseudo 2-Chamber', False),
-            ('p4ch', 'Pseudo 4-Chamber', False),
-            ('sax', 'Short Axis', True)
+        # p2ch: no slider
+        # p4ch: rotation slider (rotatable=True)
+        # sax: scroll slider (scrollable=True)
+        for col, (name, title, scrollable, rotatable) in enumerate([
+            ('p2ch', 'Pseudo 2-Chamber', False, False),
+            ('p4ch', 'Pseudo 4-Chamber', False, True),
+            ('sax', 'Short Axis', True, False)
         ]):
-            view = ObliqueSliceView(name, title, scrollable=scrollable)
+            view = ObliqueSliceView(name, title, scrollable=scrollable, rotatable=rotatable)
             view.mouse_pressed.connect(self._on_oblique_view_mouse_pressed)
             view.mouse_moved.connect(self._on_oblique_view_mouse_moved)
             view.mouse_released.connect(self._on_oblique_view_mouse_released)
+            if rotatable:
+                view.rotation_changed.connect(self._on_p4ch_rotation_changed)
+                view.rotation_mode_changed.connect(self._on_p4ch_rotation_mode_changed)
             self._bottom_views[name] = view
             grid_layout.addWidget(view, 1, col)
 
@@ -788,8 +878,13 @@ class CardiacViewWindow(QMainWindow):
         self._oblique_planes['p2ch'] = plane
         self._bottom_views['p2ch'].set_plane(volume, plane)
 
-    def _generate_p4ch_view(self):
-        """Generate pseudo-4ch view from p2ch line segment."""
+    def _generate_p4ch_view(self, rotation_degrees: float = None, rotation_mode: str = None):
+        """Generate pseudo-4ch view from p2ch line segment.
+
+        Args:
+            rotation_degrees: Rotation angle around long axis. If None, uses current slider value.
+            rotation_mode: Either 'long_axis' or 'perp_p2ch'. If None, uses current combo box value.
+        """
         ls = self._cardiac_line_segments['p2ch']
         p2ch_plane = self._oblique_planes['p2ch']
         if not ls or not p2ch_plane or not self._current_patient:
@@ -797,7 +892,16 @@ class CardiacViewWindow(QMainWindow):
 
         volume = self._current_patient.image
 
+        # Get rotation from slider if not provided
+        if rotation_degrees is None:
+            rotation_degrees = self._bottom_views['p4ch'].get_rotation()
+
+        # Get rotation mode from combo box if not provided
+        if rotation_mode is None:
+            rotation_mode = self._bottom_views['p4ch'].get_rotation_mode()
+
         # Get 2D coordinates on p2ch plane
+        # Point 1 = valve, Point 2 = apex
         pos1 = p2ch_plane.map_3d_to_2d(ls.x1, ls.y1, ls.z1)
         pos2 = p2ch_plane.map_3d_to_2d(ls.x2, ls.y2, ls.z2)
         if not pos1 or not pos2:
@@ -805,11 +909,23 @@ class CardiacViewWindow(QMainWindow):
 
         plane = create_p4ch_plane_from_p2ch_line(
             pos1[0], pos1[1], pos2[0], pos2[1],
-            p2ch_plane, volume.shape
+            p2ch_plane, volume.shape,
+            rotation_degrees=rotation_degrees,
+            rotation_mode=rotation_mode
         )
 
         self._oblique_planes['p4ch'] = plane
         self._bottom_views['p4ch'].set_plane(volume, plane)
+
+    def _on_p4ch_rotation_changed(self, view_name: str, rotation_degrees: float):
+        """Handle p4ch rotation slider change."""
+        # Regenerate p4ch with new rotation
+        self._generate_p4ch_view(rotation_degrees)
+
+    def _on_p4ch_rotation_mode_changed(self, view_name: str, rotation_mode: str):
+        """Handle p4ch rotation mode change."""
+        # Regenerate p4ch with new mode
+        self._generate_p4ch_view(rotation_mode=rotation_mode)
 
     def _generate_sax_view(self):
         """Generate short-axis view from p4ch line segment."""

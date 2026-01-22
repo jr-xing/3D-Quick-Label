@@ -192,18 +192,28 @@ def create_p2ch_plane_from_axial_line(
 
 def create_p4ch_plane_from_p2ch_line(
     line_2d_x1: float, line_2d_y1: float, line_2d_x2: float, line_2d_y2: float,
-    p2ch_plane: ObliquePlane, volume_shape: Tuple[int, int, int]
+    p2ch_plane: ObliquePlane, volume_shape: Tuple[int, int, int],
+    rotation_degrees: float = 0.0,
+    rotation_mode: str = "long_axis"
 ) -> ObliquePlane:
     """Create pseudo-4ch plane from a line segment on the p2ch view.
 
-    The p4ch plane is perpendicular to the p2ch plane and passes through
-    the line segment drawn on p2ch.
+    The p4ch plane passes through the first endpoint of the line (valve point)
+    and contains the long axis. The plane can be rotated around the long axis
+    using rotation_degrees.
+
+    Line convention: point 1 = valve (mid-valve), point 2 = apex
+    The long axis L goes from valve to apex.
 
     Args:
-        line_2d_x1, line_2d_y1: First endpoint in p2ch 2D coordinates
-        line_2d_x2, line_2d_y2: Second endpoint in p2ch 2D coordinates
+        line_2d_x1, line_2d_y1: First endpoint (VALVE) in p2ch 2D coordinates
+        line_2d_x2, line_2d_y2: Second endpoint (APEX) in p2ch 2D coordinates
         p2ch_plane: The ObliquePlane of the p2ch view
         volume_shape: (z_dim, y_dim, x_dim) shape of volume
+        rotation_degrees: Rotation angle around long axis
+        rotation_mode: Either 'long_axis' (default) or 'perp_p2ch'
+            - 'long_axis': 0° = same viewing direction as p2ch
+            - 'perp_p2ch': 0° = perpendicular to p2ch plane
 
     Returns:
         ObliquePlane for the pseudo-4ch view
@@ -211,30 +221,50 @@ def create_p4ch_plane_from_p2ch_line(
     z_dim, y_dim, x_dim = volume_shape
 
     # Convert 2D line endpoints to 3D
-    p1_3d = np.array(p2ch_plane.map_2d_to_3d(line_2d_x1, line_2d_y1))
-    p2_3d = np.array(p2ch_plane.map_2d_to_3d(line_2d_x2, line_2d_y2))
+    # Point 1 = valve, Point 2 = apex
+    valve_3d = np.array(p2ch_plane.map_2d_to_3d(line_2d_x1, line_2d_y1))
+    apex_3d = np.array(p2ch_plane.map_2d_to_3d(line_2d_x2, line_2d_y2))
 
-    # Line direction in 3D
-    line_dir_3d = normalize(p2_3d - p1_3d)
+    # Long axis direction: from valve to apex
+    long_axis = normalize(apex_3d - valve_3d)
 
-    # P4ch normal: perpendicular to both line direction and p2ch normal
-    # This makes p4ch perpendicular to p2ch
-    p4ch_normal = normalize(np.cross(line_dir_3d, p2ch_plane.normal))
+    # Determine base normal based on rotation mode
+    if rotation_mode == "perp_p2ch":
+        # Mode: perpendicular to p2ch at 0°
+        # Base normal is perpendicular to both p2ch normal and long axis
+        base_normal = normalize(np.cross(p2ch_plane.normal, long_axis))
+    else:
+        # Mode: rotate around long axis (default)
+        # Base normal is p2ch normal projected onto the plane perpendicular to long axis
+        # This makes 0° = same viewing direction as p2ch
+        proj = p2ch_plane.normal - np.dot(p2ch_plane.normal, long_axis) * long_axis
+        if np.linalg.norm(proj) < 1e-6:
+            # Edge case: p2ch normal is parallel to long axis
+            # Fall back to perpendicular mode
+            base_normal = normalize(np.cross(p2ch_plane.normal, long_axis))
+        else:
+            base_normal = normalize(proj)
 
-    # U-axis: along the line direction (so we see along the drawn line)
-    u_axis = line_dir_3d
+    # Apply rotation around long axis using Rodrigues' formula
+    # v_rot = v*cos(θ) + (k×v)*sin(θ) + k*(k·v)*(1-cos(θ))
+    # where k = long_axis, v = base_normal
+    theta = np.radians(rotation_degrees)
+    cos_t = np.cos(theta)
+    sin_t = np.sin(theta)
 
-    # V-axis: perpendicular to both normal and u_axis
-    # We want "up" in the image to generally correspond to superior direction
-    v_axis = normalize(np.cross(p4ch_normal, u_axis))
+    # Since base_normal ⊥ long_axis, the (k·v) term is 0
+    p4ch_normal = base_normal * cos_t + np.cross(long_axis, base_normal) * sin_t
+    p4ch_normal = normalize(p4ch_normal)
 
-    # Make sure v_axis points somewhat upward (negative z in our convention)
-    if v_axis[2] > 0:
-        v_axis = -v_axis
-        u_axis = -u_axis  # Flip u too to maintain right-handedness
+    # V-axis: along the long axis (so heart appears vertical in image)
+    # Want apex at bottom, valve at top (superior)
+    v_axis = -long_axis  # Negative so valve (superior) is at top
 
-    # Origin: midpoint of line in 3D
-    origin = (p1_3d + p2_3d) / 2
+    # U-axis: perpendicular to both v_axis and normal (horizontal in image)
+    u_axis = normalize(np.cross(v_axis, p4ch_normal))
+
+    # Origin: valve point (the plane passes through valve)
+    origin = valve_3d.copy()
 
     # Dimensions similar to p2ch
     width = int(max(x_dim, y_dim) * 1.5)
